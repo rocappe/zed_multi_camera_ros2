@@ -33,18 +33,20 @@ find_package(CUDA ${ZED_CUDA_VERSION} REQUIRED)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(zed_components REQUIRED)
     
-include_directories(${CUDA_INCLUDE_DIRS})
-include_directories(${ZED_INCLUDE_DIRS})
-include_directories(${OpenCV_INCLUDE_DIRS})
+#include_directories(${CUDA_INCLUDE_DIRS})
+#include_directories(${ZED_INCLUDE_DIRS})
+#include_directories(${OpenCV_INCLUDE_DIRS})
 
-link_directories(${ZED_LIBRARY_DIR})
-link_directories(${OpenCV_LIBRARY_DIRS})
-link_directories(${CUDA_LIBRARY_DIRS})
+#link_directories(${ZED_LIBRARY_DIR})
+#link_directories(${OpenCV_LIBRARY_DIRS})
+#link_directories(${CUDA_LIBRARY_DIRS})
 
 add_executable(${PROJECT_NAME} src/main.cpp)
 add_definitions(-std=c++14 -O3)
-
+ament_target_dependencies(${PROJECT_NAME} ZED OpenCV CUDA ament_cmake rclcpp sensor_msgs zed_components)
+ 
 if (LINK_SHARED_ZED)
     SET(ZED_LIBS ${ZED_LIBRARIES} ${CUDA_CUDA_LIBRARY} ${CUDA_CUDART_LIBRARY} ${SPECIAL_OS_LIBS})
 else()

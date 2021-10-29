@@ -70,6 +70,10 @@ int ZedPublisher::main_loop() {
   init_parameters.depth_mode = sl::DEPTH_MODE::PERFORMANCE;
   init_parameters.camera_resolution = sl::RESOLUTION::HD720;
   init_parameters.camera_fps = fps_;
+  init_parameters.depth_minimum_distance = 0.5f;
+  init_parameters.depth_maximum_distance = 5.0f;
+  init_parameters.coordinate_units = sl::UNIT::METER;
+  init_parameters.coordinate_system = sl::COORDINATE_SYSTEM::RIGHT_HANDED_Z_UP_X_FWD;
     
   std::vector< sl::DeviceProperties> devList = sl::Camera::getDeviceList();
     nb_detected_zed_ = devList.size();
@@ -79,8 +83,8 @@ int ZedPublisher::main_loop() {
     std::cout << "ID : " << devList[z].id << " ,model : " << devList[z].camera_model << " , S/N : " << devList[z].serial_number << " , state : "<<devList[z].camera_state<<std::endl;
   }
 
-  if (nb_detected_zed_ != 2) {
-    std::cout << "Did not detect two ZED cameras, exit program" << std::endl;
+  if (nb_detected_zed_ == 0) {
+    std::cout << "Did not detect ZED cameras, exit program" << std::endl;
       return EXIT_FAILURE;
   }
     

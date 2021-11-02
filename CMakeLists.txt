@@ -35,6 +35,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(zed_components REQUIRED)
+find_package(nav_msgs REQUIRED)
     
 add_executable(${PROJECT_NAME} src/multi_camera.cpp)
 add_definitions(-std=c++14 -O3)

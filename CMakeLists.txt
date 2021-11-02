@@ -22,6 +22,8 @@ if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 14)
 endif()
 
+add_definitions(-DCMAKE_EXPORT_COMPILE_COMMANDS=ON)
+
 IF(NOT MSVC)
     SET(SPECIAL_OS_LIBS "pthread" "X11")
 ENDIF()
@@ -34,14 +36,6 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(zed_components REQUIRED)
     
-#include_directories(${CUDA_INCLUDE_DIRS})
-#include_directories(${ZED_INCLUDE_DIRS})
-#include_directories(${OpenCV_INCLUDE_DIRS})
-
-#link_directories(${ZED_LIBRARY_DIR})
-#link_directories(${OpenCV_LIBRARY_DIRS})
-#link_directories(${CUDA_LIBRARY_DIRS})
-
 add_executable(${PROJECT_NAME} src/main.cpp)
 add_definitions(-std=c++14 -O3)
 ament_target_dependencies(${PROJECT_NAME} ZED OpenCV CUDA ament_cmake rclcpp sensor_msgs zed_components)
@@ -56,5 +50,8 @@ TARGET_LINK_LIBRARIES(${PROJECT_NAME} ${ZED_LIBS} ${SPECIAL_OS_LIBS} ${OpenCV_LI
 
 install(TARGETS ${PROJECT_NAME}
   DESTINATION lib/${PROJECT_NAME})
+
+install(DIRECTORY launch
+	DESTINATION share/${PROJECT_NAME})
 
 ament_package()

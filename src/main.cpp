@@ -5,12 +5,10 @@
 
 #include <sl/Camera.hpp>
 #include "zed_components/zed_camera_component.hpp"
-#include <image_transport/image_transport.hpp>
-#include <image_transport/camera_publisher.hpp>
-#include <image_transport/publisher.hpp>
 #include "rclcpp/rclcpp.hpp"
-#include "sensor_msgs/msg/image.hpp"
+#include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/distortion_models.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
 
 
 class ZedPublisher : public rclcpp::Node
@@ -34,7 +32,8 @@ class ZedPublisher : public rclcpp::Node
     std::uint32_t sn_l_;
     std::uint32_t sn_r_;
     std::unordered_map<std::uint32_t, std::string> camera_frames_;
-    std::unordered_map<std::uint32_t, std::array<std::shared_ptr<image_transport::CameraPublisher>, 2>> camera_publishers_;
+    std::unordered_map<std::uint32_t, std::array<std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::Image>>, 2>> image_publishers_;
+    std::unordered_map<std::uint32_t, std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::CameraInfo>>> info_publishers_;
 	size_t nb_detected_zed_;
 	std::vector<std::shared_ptr<sl::Camera>> zeds_;
 	std::vector<std::thread> thread_pool_;
@@ -46,11 +45,16 @@ ZedPublisher::ZedPublisher() : Node{"zed_rgbd_publisher"}, run_{true}, res_w_{12
 {
   camera_frames_ = {{sn_l_, "zed2_l_left_camera_optical_frame"},  {sn_r_, "zed2_r_left_camera_optical_frame"}};
   rclcpp::QoS qos_profile(10);
-  auto rgb_publisher_l_ = std::make_shared<image_transport::CameraPublisher>(this, "zed2_l/rgb", qos_profile.get_rmw_qos_profile());
-  auto depth_publisher_l_ = std::make_shared<image_transport::CameraPublisher>(this, "zed2_l/depth", qos_profile.get_rmw_qos_profile());
-  auto rgb_publisher_r_ = std::make_shared<image_transport::CameraPublisher>(this, "zed2_r/rgb", qos_profile.get_rmw_qos_profile());
-  auto depth_publisher_r_ = std::make_shared<image_transport::CameraPublisher>(this, "zed2_r/depth", qos_profile.get_rmw_qos_profile());
-  camera_publishers_ = {{sn_l_, {rgb_publisher_l_, depth_publisher_l_}}, {sn_r_, {rgb_publisher_r_, depth_publisher_r_}}};
+  //this->declare_parameter<int>("left_sn", 28846348);
+  auto rgb_publisher_l_info_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("zed2_l/rgb/info", qos_profile);
+  auto rgb_publisher_r_info_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("zed2_r/rgb/info", qos_profile);
+  auto rgb_publisher_l_ = this->create_publisher<sensor_msgs::msg::Image>("zed2_l/rgb", qos_profile);
+  auto rgb_publisher_r_ = this->create_publisher<sensor_msgs::msg::Image>("zed2_r/rgb", qos_profile);
+  auto depth_publisher_l_ = this->create_publisher<sensor_msgs::msg::Image>("zed2_l/depth", qos_profile);
+  auto depth_publisher_r_ = this->create_publisher<sensor_msgs::msg::Image>("zed2_r/depth", qos_profile);
+  
+  image_publishers_ = {{sn_l_, {rgb_publisher_l_, depth_publisher_l_}}, {sn_r_, {rgb_publisher_r_, depth_publisher_r_}}};
+  info_publishers_ = {{sn_l_, rgb_publisher_l_info_}, {sn_r_, rgb_publisher_r_info_}};
   main_loop();
 };
 
@@ -131,8 +135,9 @@ void ZedPublisher::get_and_publish(sl::Camera& zed, bool& run) {
       auto image = sl_tools::imageToROSmsg(mat_image, camera_frames_.at(sn), ts);
       left_cam_info_msg->header.stamp = ts;
       auto depth_img = sl_tools::imageToROSmsg(mat_depth, camera_frames_.at(sn), ts);
-      camera_publishers_.at(sn).at(0)->publish(image, left_cam_info_msg);
-      camera_publishers_.at(sn).at(1)->publish(depth_img, left_cam_info_msg);
+      image_publishers_.at(sn).at(0)->publish(*image);
+      image_publishers_.at(sn).at(1)->publish(*depth_img);
+      info_publishers_.at(sn)->publish(*left_cam_info_msg);
     }
     sl::sleep_ms(2);
   }

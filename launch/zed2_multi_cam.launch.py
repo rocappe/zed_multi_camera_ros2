@@ -17,5 +17,10 @@ def generate_launch_description():
 				"fps": 15
 			}],
 			output="screen",
-		)
+		),
+		Node(
+			package="tf2_ros", executable="static_transform_publisher",
+			arguments=["0.0", "0.20", "0.0", "0", "0", "0", "zed2_l_left_camera_optical_frame", "zed2_r_left_camera_optical_frame"],
+			output="screen",
+		),
 	])

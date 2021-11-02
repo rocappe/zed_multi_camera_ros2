@@ -14,38 +14,43 @@
 class ZedPublisher : public rclcpp::Node
 {
   public:
-	ZedPublisher();
-	~ZedPublisher();
+	  ZedPublisher();
+	  ~ZedPublisher();
 
   private:
     int main_loop();
     void get_and_publish(sl::Camera& zed, bool& run);
-	void fillCamInfo(sl::Camera& zed, sl::Resolution& resolution, std::shared_ptr<sensor_msgs::msg::CameraInfo> leftCamInfoMsg, 
+	  void fillCamInfo(sl::Camera& zed, sl::Resolution& resolution, std::shared_ptr<sensor_msgs::msg::CameraInfo> leftCamInfoMsg, 
 							std::shared_ptr<sensor_msgs::msg::CameraInfo> rightCamInfoMsg, std::string leftFrameId,
 							std::string rightFrameId, bool rawParam = false);
 
     bool run_;
-    const int res_w_;
-    const int res_h_;
-    const float downsampling_;
-    const int fps_;
+    int res_w_;
+    int res_h_;
+    float downsampling_;
+    int fps_;
     std::uint32_t sn_l_;
     std::uint32_t sn_r_;
     std::unordered_map<std::uint32_t, std::string> camera_frames_;
     std::unordered_map<std::uint32_t, std::array<std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::Image>>, 2>> image_publishers_;
     std::unordered_map<std::uint32_t, std::shared_ptr<rclcpp::Publisher<sensor_msgs::msg::CameraInfo>>> info_publishers_;
-	size_t nb_detected_zed_;
-	std::vector<std::shared_ptr<sl::Camera>> zeds_;
-	std::vector<std::thread> thread_pool_;
+    size_t nb_detected_zed_;
+    std::vector<std::shared_ptr<sl::Camera>> zeds_;
+    std::vector<std::thread> thread_pool_;
 };
 
 
-ZedPublisher::ZedPublisher() : Node{"zed_rgbd_publisher"}, run_{true}, res_w_{1280}, res_h_{720}, downsampling_{1.0}, fps_{15},
-	  	sn_l_{28846348}, sn_r_{21128703}, nb_detected_zed_{0}
+ZedPublisher::ZedPublisher() : Node{"zed_rgbd_publisher"}, run_{true}, nb_detected_zed_{0}
 {
-  camera_frames_ = {{sn_l_, "zed2_l_left_camera_optical_frame"},  {sn_r_, "zed2_r_left_camera_optical_frame"}};
   rclcpp::QoS qos_profile(10);
-  //this->declare_parameter<int>("left_sn", 28846348);
+
+  sn_l_ = this->declare_parameter<int>("left_sn", 28846348);
+  sn_r_ = this->declare_parameter<int>("right_sn", 21128703);
+  res_w_ = this->declare_parameter<int>("width", 1280);
+  res_h_ = this->declare_parameter<int>("height", 720);
+  downsampling_ = this->declare_parameter<float>("downsampling", 1.0);
+  fps_ = this->declare_parameter<int>("fps", 15);
+
   auto rgb_publisher_l_info_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("zed2_l/rgb/info", qos_profile);
   auto rgb_publisher_r_info_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("zed2_r/rgb/info", qos_profile);
   auto rgb_publisher_l_ = this->create_publisher<sensor_msgs::msg::Image>("zed2_l/rgb", qos_profile);
@@ -55,6 +60,8 @@ ZedPublisher::ZedPublisher() : Node{"zed_rgbd_publisher"}, run_{true}, res_w_{12
   
   image_publishers_ = {{sn_l_, {rgb_publisher_l_, depth_publisher_l_}}, {sn_r_, {rgb_publisher_r_, depth_publisher_r_}}};
   info_publishers_ = {{sn_l_, rgb_publisher_l_info_}, {sn_r_, rgb_publisher_r_info_}};
+  camera_frames_ = {{sn_l_, "zed2_l_left_camera_optical_frame"},  {sn_r_, "zed2_r_left_camera_optical_frame"}};
+
   main_loop();
 };
 

@@ -36,10 +36,15 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(zed_components REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
     
 add_executable(${PROJECT_NAME} src/multi_camera.cpp)
 add_definitions(-std=c++14 -O3)
-ament_target_dependencies(${PROJECT_NAME} ZED OpenCV CUDA ament_cmake rclcpp sensor_msgs zed_components)
+ament_target_dependencies(${PROJECT_NAME} ZED OpenCV CUDA ament_cmake rclcpp sensor_msgs zed_components nav_msgs)
+target_link_libraries(${PROJECT_NAME} zed_odom)
+
+add_library(zed_odom src/zed_odom.cpp)
+ament_target_dependencies(zed_odom ZED OpenCV CUDA ament_cmake rclcpp sensor_msgs zed_components nav_msgs tf2_ros)
  
 if (LINK_SHARED_ZED)
     SET(ZED_LIBS ${ZED_LIBRARIES} ${CUDA_CUDA_LIBRARY} ${CUDA_CUDART_LIBRARY} ${SPECIAL_OS_LIBS})
@@ -49,7 +54,7 @@ endif()
 
 TARGET_LINK_LIBRARIES(${PROJECT_NAME} ${ZED_LIBS} ${SPECIAL_OS_LIBS} ${OpenCV_LIBRARIES})
 
-install(TARGETS ${PROJECT_NAME}
+install(TARGETS ${PROJECT_NAME} zed_odom
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch

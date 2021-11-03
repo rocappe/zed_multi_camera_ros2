@@ -11,6 +11,10 @@
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <nav_msgs/msg/odometry>
 
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/transform_broadcaster.h>
+#include <tf2_ros/static_transform_broadcaster.h>
 
 class ZedPublisher : public rclcpp::Node
 {
@@ -42,6 +46,63 @@ class ZedPublisher : public rclcpp::Node
     std::mutex zed_mutex_;
 };
 
+
+class ZedOdom
+{
+  public:
+    ZedOdom();
+    ~ZedOdom();
+
+  private:
+    void getOdom();
+
+    bool mSensor2BaseTransfValid;
+    bool mSensor2CameraTransfValid;
+    bool mCamera2BaseTransfValid;
+    bool mPosTrackingStarted;
+
+    bool mInitOdomWithPose;
+    bool mFloorAlignment;
+    bool mTwoDMode;
+
+    // ----> initialization Transform listener
+    std::unique_ptr<tf2_ros::Buffer> mTfBuffer;
+    std::shared_ptr<tf2_ros::TransformBroadcaster> mTfBroadcaster;
+    // <---- initialization Transform listener
+
+     // ----> TF Transforms
+    tf2::Transform mMap2OdomTransf;         // Coordinates of the odometry frame in map frame
+    tf2::Transform mOdom2BaseTransf;        // Coordinates of the base in odometry frame
+    tf2::Transform mMap2BaseTransf;         // Coordinates of the base in map frame
+    tf2::Transform mSensor2BaseTransf;      // Coordinates of the base frame in sensor frame
+    tf2::Transform mSensor2CameraTransf;    // Coordinates of the camera frame in sensor frame
+    tf2::Transform mCamera2BaseTransf;      // Coordinates of the base frame in camera frame
+    // <---- TF Transforms
+
+    std::string mCameraFrameId;
+    std::string mBaseFrameId;
+    std::string mDepthFrameId;
+
+    rclcpp::Node& mNode;
+    sl::Camera& mZed;
+
+}
+
+ZedOdom::ZedOdom(rclcpp::Node& node, sl::Camera& zed) : mNode{node}, mZed{zed}, mSensor2BaseTransfValid{false}, mSensor2CameraTransfValid{false}, mCamera2BaseTransfValid{false},
+                    mInitOdomWithPose{true}, mFloorAlignment{false}, mTwoDMode{false}
+{
+  mTfBuffer = std::make_unique<tf2_ros::Buffer>(node->get_clock())
+  // Initialize tracking parameters
+}
+
+void ZedOdom::getOdom()
+{
+  if (!mPosTrackingStarted){
+    startPosTracking();
+  }
+  processOdometry();
+  publish_odometry();
+}
 
 ZedPublisher::ZedPublisher() : Node{"zed_rgbd_publisher"}, run_{true}, nb_detected_zed_{0}
 {
@@ -163,147 +224,276 @@ void publish_odometry(sl::Camera& zed, bool& run){
   const std::lock_guard<std::mutex> lock(zed_mutex_);
 }
 
-void ZedCamera::processPose()
+
+bool ZedCamera::startPosTracking()
 {
-  //adapted from https://github.com/stereolabs/zed-ros2-wrapper/blob/de1dfc4cde9ada3173074a05e14631d4d56e442c/zed_components/src/zed_camera/src/zed_camera_component.cpp
-  
-  if (!mSensor2BaseTransfValid)
+  if (mDepthDisabled)
   {
-    getSens2BaseTransform();
+    RCLCPP_WARN(mNode->get_logger(), "Cannot start Positional Tracking if `depth.quality` is set to `0` [NONE]");
+    return false;
   }
 
-  if (!mSensor2CameraTransfValid)
+  RCLCPP_INFO_STREAM(mNode->get_logger(), "*** Starting Positional Tracking ***");
+
+  RCLCPP_INFO(mNode->get_logger(), " * Waiting for valid static transformations...");
+
+  bool transformOk = false;
+  double elapsed = 0.0;
+  mPosTrackingReady = false;
+
+  auto start = std::chrono::high_resolution_clock::now();
+
+  do
   {
-    getSens2CameraTransform();
-  }
+    transformOk = setPose(mInitialBasePose[0], mInitialBasePose[1], mInitialBasePose[2], mInitialBasePose[3],
+                          mInitialBasePose[4], mInitialBasePose[5]);
 
-  if (!mCamera2BaseTransfValid)
-  {
-    getCamera2BaseTransform();
-  }
+    elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start)
+                  .count();
 
-  size_t odomSub = 0;
-  try
-  {
-    odomSub = count_subscribers(mOdomTopic);  // mPubOdom subscribers
-  }
-  catch (...)
-  {
-    rcutils_reset_error();
-    RCLCPP_DEBUG(get_logger(), "processPose: Exception while counting subscribers");
-    return;
-  }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  static sl::POSITIONAL_TRACKING_STATE oldStatus;
-  mPosTrackingStatus = mZed.getPosition(mLastZedPose, sl::REFERENCE_FRAME::WORLD);
-
-  sl::Translation translation = mLastZedPose.getTranslation();
-  sl::Orientation quat = mLastZedPose.getOrientation();
-
-  if (quat.sum() == 0)
-  {
-    return;
-  }
-
-#if 0  // Enable for TF checking
-    double roll, pitch, yaw;
-    tf2::Matrix3x3(tf2::Quaternion(quat.ox, quat.oy, quat.oz, quat.ow)).getRPY(roll, pitch, yaw);
-
-    RCLCPP_DEBUG(get_logger(), "Sensor POSE [%s -> %s] - {%.2f,%.2f,%.2f} {%.2f,%.2f,%.2f}",
-                 mLeftCamFrameId.c_str(), mMapFrameId.c_str(),
-                 translation.x, translation.y, translation.z,
-                 roll * RAD2DEG, pitch * RAD2DEG, yaw * RAD2DEG);
-
-    RCLCPP_DEBUG(get_logger(), "MAP -> Tracking Status: %s", sl::toString(mTrackingStatus).c_str());
-#endif
-
-  if (mPosTrackingStatus == sl::POSITIONAL_TRACKING_STATE::OK ||
-      mPosTrackingStatus == sl::POSITIONAL_TRACKING_STATE::SEARCHING)
-  {
-    tf2::Transform map_to_sens_transf;
-    map_to_sens_transf.setOrigin(tf2::Vector3(translation(0), translation(1), translation(2)));
-    map_to_sens_transf.setRotation(tf2::Quaternion(quat(0), quat(1), quat(2), quat(3)));
-
-    mMap2BaseTransf = map_to_sens_transf * mSensor2BaseTransf;  // Base position in map frame
-
-    if (mTwoDMode)
+    if (elapsed > 10000)
     {
-      tf2::Vector3 tr_2d = mMap2BaseTransf.getOrigin();
-      tr_2d.setZ(mFixedZValue);
-      mMap2BaseTransf.setOrigin(tr_2d);
-
-      double roll, pitch, yaw;
-      tf2::Matrix3x3(mMap2BaseTransf.getRotation()).getRPY(roll, pitch, yaw);
-
-      tf2::Quaternion quat_2d;
-      quat_2d.setRPY(0.0, 0.0, yaw);
-
-      mMap2BaseTransf.setRotation(quat_2d);
+      RCLCPP_WARN(mNode->get_logger(), " !!! Failed to get static transforms. Is the 'ROBOT STATE PUBLISHER' node correctly "
+                                "working? ");
+      break;
     }
 
-#if 0  // Enable for TF checking
-        double roll, pitch, yaw;
-        tf2::Matrix3x3(mMap2BaseTransf.getRotation()).getRPY(roll, pitch, yaw);
+  } while (transformOk == false);
 
-        RCLCPP_DEBUG(get_logger(), "*** Base POSE [%s -> %s] - {%.3f,%.3f,%.3f} {%.3f,%.3f,%.3f}",
-                     mMapFrameId.c_str(), mBaseFrameId.c_str(),
-                     mMap2BaseTransf.getOrigin().x(), mMap2BaseTransf.getOrigin().y(), mMap2BaseTransf.getOrigin().z(),
-                     roll * RAD2DEG, pitch * RAD2DEG, yaw * RAD2DEG);
-#endif
-
-    bool initOdom = false;
-
-    if (!(mFloorAlignment))
-    {
-      initOdom = mInitOdomWithPose;
-    }
-    else
-    {
-      initOdom = mInitOdomWithPose & (mPosTrackingStatus == sl::POSITIONAL_TRACKING_STATE::OK);
-    }
-
-    if (initOdom || mResetOdom)
-    {
-      RCLCPP_INFO(get_logger(), "Odometry aligned to last tracking pose");
-
-      // Propagate Odom transform in time
-      mOdom2BaseTransf = mMap2BaseTransf;
-      mMap2BaseTransf.setIdentity();
-
-      if (odomSub > 0)
-      {
-        // Publish odometry message
-        publishOdom(mOdom2BaseTransf, mLastZedPose, mFrameTimestamp);
-      }
-
-      mInitOdomWithPose = false;
-      mResetOdom = false;
-    }
-    else
-    {
-      // Transformation from map to odometry frame
-      mMap2OdomTransf = mMap2BaseTransf * mOdom2BaseTransf.inverse();
-
-#if 0  // Enable for TF checking
-            double roll, pitch, yaw;
-            tf2::Matrix3x3(mMap2OdomTransf.getRotation()).getRPY(roll, pitch, yaw);
-
-            RCLCPP_DEBUG(get_logger(), "+++ Diff [%s -> %s] - {%.3f,%.3f,%.3f} {%.3f,%.3f,%.3f}",
-                         mMapFrameId.c_str(), mOdomFrameId.c_str(),
-                         mMap2OdomTransf.getOrigin().x(), mMap2OdomTransf.getOrigin().y(), mMap2OdomTransf.getOrigin().z(),
-                         roll * RAD2DEG, pitch * RAD2DEG, yaw * RAD2DEG);
-#endif
-    }
-
-    // Publish Pose message
-    publishPose();
-    mPosTrackingReady = true;
+  if (transformOk)
+  {
+    RCLCPP_DEBUG(mNode->get_logger(), "Time required to get valid static transforms: %g sec", elapsed / 1000.);
   }
 
-  oldStatus = mPosTrackingStatus;
+  RCLCPP_INFO(mNode->get_logger(), "Initial ZED left camera pose (ZED pos. tracking): ");
+  RCLCPP_INFO(mNode->get_logger(), " * T: [%g,%g,%g]", mInitialPoseSl.getTranslation().x, mInitialPoseSl.getTranslation().y,
+              mInitialPoseSl.getTranslation().z);
+  RCLCPP_INFO(mNode->get_logger(), " * Q: [%g,%g,%g,%g]", mInitialPoseSl.getOrientation().ox,
+              mInitialPoseSl.getOrientation().oy, mInitialPoseSl.getOrientation().oz,
+              mInitialPoseSl.getOrientation().ow);
+
+  if (mAreaMemoryDbPath != "" && !sl_tools::file_exist(mAreaMemoryDbPath))
+  {
+    mAreaMemoryDbPath = "";
+    RCLCPP_WARN_STREAM(mNode->get_logger(),
+                       "'area_memory_db_path' path doesn't exist or is unreachable: " << mAreaMemoryDbPath);
+  }
+
+  // Tracking parameters
+  sl::PositionalTrackingParameters trackParams;
+
+  trackParams.area_file_path = mAreaMemoryDbPath.c_str();
+
+  mPoseSmoothing = false;  // Always false. Pose Smoothing is to be enabled only for VR/AR applications
+  trackParams.enable_pose_smoothing = mPoseSmoothing;
+
+  trackParams.enable_area_memory = mAreaMemory;
+  trackParams.enable_imu_fusion = mImuFusion;
+  trackParams.initial_world_transform = mInitialPoseSl;
+
+  trackParams.set_floor_as_origin = mFloorAlignment;
+
+  sl::ERROR_CODE err = mZed.enablePositionalTracking(trackParams);
+
+  if (err == sl::ERROR_CODE::SUCCESS)
+  {
+    mPosTrackingStarted = true;
+  }
+  else
+  {
+    mPosTrackingStarted = false;
+
+    RCLCPP_WARN(mNode->get_logger(), "Tracking not started: %s", sl::toString(err).c_str());
+  }
+
+  if (mPosTrackingStarted)
+  {
+    startPathPubTimer(mPathPubRate);
+  }
+
+  return mPosTrackingStarted;
 }
 
-void ZedCamera::processOdometry()
+
+
+bool ZedCamera::getCamera2BaseTransform()
+{
+  RCLCPP_DEBUG(mNode->get_logger(), "Getting static TF from '%s' to '%s'", mCameraFrameId.c_str(), mBaseFrameId.c_str());
+
+  mCamera2BaseTransfValid = false;
+  static bool first_error = true;
+
+  // ----> Static transforms
+  // Sensor to Base link
+  try
+  {
+    // Save the transformation
+    geometry_msgs::msg::TransformStamped c2b =
+        mTfBuffer->lookupTransform(mCameraFrameId, mBaseFrameId, TIMEZERO_SYS, rclcpp::Duration(0.1));
+
+    // Get the TF2 transformation
+    // tf2::fromMsg(c2b.transform, mCamera2BaseTransf);
+    geometry_msgs::msg::Transform in = c2b.transform;
+    mCamera2BaseTransf.setOrigin(tf2::Vector3(in.translation.x, in.translation.y, in.translation.z));
+    // w at the end in the constructor
+    mCamera2BaseTransf.setRotation(tf2::Quaternion(in.rotation.x, in.rotation.y, in.rotation.z, in.rotation.w));
+
+    double roll, pitch, yaw;
+    tf2::Matrix3x3(mCamera2BaseTransf.getRotation()).getRPY(roll, pitch, yaw);
+
+    RCLCPP_INFO(mNode->get_logger(), "Static transform Camera Center to Base [%s -> %s]", mCameraFrameId.c_str(),
+                mBaseFrameId.c_str());
+    RCLCPP_INFO(mNode->get_logger(), " * Translation: {%.3f,%.3f,%.3f}", mCamera2BaseTransf.getOrigin().x(),
+                mCamera2BaseTransf.getOrigin().y(), mCamera2BaseTransf.getOrigin().z());
+    RCLCPP_INFO(mNode->get_logger(), " * Rotation: {%.3f,%.3f,%.3f}", roll * RAD2DEG, pitch * RAD2DEG, yaw * RAD2DEG);
+  }
+  catch (tf2::TransformException& ex)
+  {
+    if (!first_error)
+    {
+      rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+      RCLCPP_DEBUG_THROTTLE(mNode->get_logger(), steady_clock, 1.0, "Transform error: %s", ex.what());
+      RCLCPP_WARN_THROTTLE(mNode->get_logger(), steady_clock, 1.0, "The tf from '%s' to '%s' is not available.",
+                           mCameraFrameId.c_str(), mBaseFrameId.c_str());
+      RCLCPP_WARN_THROTTLE(mNode->get_logger(), steady_clock, 1.0,
+                           "Note: one of the possible cause of the problem is the absense of an instance "
+                           "of the `robot_state_publisher` node publishing the correct static TF transformations "
+                           "or a modified URDF not correctly reproducing the ZED "
+                           "TF chain '%s' -> '%s' -> '%s'",
+                           mBaseFrameId.c_str(), mCameraFrameId.c_str(), mDepthFrameId.c_str());
+      first_error = false;
+    }
+
+    mCamera2BaseTransf.setIdentity();
+    return false;
+  }
+
+  // <---- Static transforms
+  mCamera2BaseTransfValid = true;
+  return true;
+}
+
+bool ZedCamera::getSens2CameraTransform()
+{
+  RCLCPP_DEBUG(mNode->get_logger(), "Getting static TF from '%s' to '%s'", mDepthFrameId.c_str(), mCameraFrameId.c_str());
+
+  mSensor2CameraTransfValid = false;
+
+  static bool first_error = true;
+
+  // ----> Static transforms
+  // Sensor to Camera Center
+  try
+  {
+    // Save the transformation
+    geometry_msgs::msg::TransformStamped s2c =
+        mTfBuffer->lookupTransform(mDepthFrameId, mCameraFrameId, TIMEZERO_SYS, rclcpp::Duration(0.1));
+
+    // Get the TF2 transformation
+    // tf2::fromMsg(s2c.transform, mSensor2CameraTransf);
+    geometry_msgs::msg::Transform in = s2c.transform;
+    mSensor2CameraTransf.setOrigin(tf2::Vector3(in.translation.x, in.translation.y, in.translation.z));
+    // w at the end in the constructor
+    mSensor2CameraTransf.setRotation(tf2::Quaternion(in.rotation.x, in.rotation.y, in.rotation.z, in.rotation.w));
+
+    double roll, pitch, yaw;
+    tf2::Matrix3x3(mSensor2CameraTransf.getRotation()).getRPY(roll, pitch, yaw);
+
+    RCLCPP_INFO(mNode->get_logger(), "Static transform Sensor to Camera Center [%s -> %s]", mDepthFrameId.c_str(),
+                mCameraFrameId.c_str());
+    RCLCPP_INFO(mNode->get_logger(), " * Translation: {%.3f,%.3f,%.3f}", mSensor2CameraTransf.getOrigin().x(),
+                mSensor2CameraTransf.getOrigin().y(), mSensor2CameraTransf.getOrigin().z());
+    RCLCPP_INFO(mNode->get_logger(), " * Rotation: {%.3f,%.3f,%.3f}", roll * RAD2DEG, pitch * RAD2DEG, yaw * RAD2DEG);
+  }
+  catch (tf2::TransformException& ex)
+  {
+    if (!first_error)
+    {
+      rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+      RCLCPP_DEBUG_THROTTLE(mNode->get_logger(), steady_clock, 1.0, "Transform error: %s", ex.what());
+      RCLCPP_WARN_THROTTLE(mNode->get_logger(), steady_clock, 1.0, "The tf from '%s' to '%s' is not available.",
+                           mDepthFrameId.c_str(), mCameraFrameId.c_str());
+      RCLCPP_WARN_THROTTLE(mNode->get_logger(), steady_clock, 1.0,
+                           "Note: one of the possible cause of the problem is the absense of an instance "
+                           "of the `robot_state_publisher` node publishing the correct static TF transformations "
+                           "or a modified URDF not correctly reproducing the ZED "
+                           "TF chain '%s' -> '%s' -> '%s'",
+                           mBaseFrameId.c_str(), mCameraFrameId.c_str(), mDepthFrameId.c_str());
+      first_error = false;
+    }
+
+    mSensor2CameraTransf.setIdentity();
+    return false;
+  }
+
+  // <---- Static transforms
+
+  mSensor2CameraTransfValid = true;
+  return true;
+}
+
+bool ZedCamera::getSens2BaseTransform()
+{
+  RCLCPP_DEBUG(mNode->get_logger(), "Getting static TF from '%s' to '%s'", mDepthFrameId.c_str(), mBaseFrameId.c_str());
+
+  mSensor2BaseTransfValid = false;
+  static bool first_error = true;
+
+  // ----> Static transforms
+  // Sensor to Base link
+  try
+  {
+    // Save the transformation
+    geometry_msgs::msg::TransformStamped s2b =
+        mTfBuffer->lookupTransform(mDepthFrameId, mBaseFrameId, TIMEZERO_SYS, rclcpp::Duration(0.1));
+
+    // Get the TF2 transformation
+    // tf2::fromMsg(s2b.transform, mSensor2BaseTransf);
+    geometry_msgs::msg::Transform in = s2b.transform;
+    mSensor2BaseTransf.setOrigin(tf2::Vector3(in.translation.x, in.translation.y, in.translation.z));
+    // w at the end in the constructor
+    mSensor2BaseTransf.setRotation(tf2::Quaternion(in.rotation.x, in.rotation.y, in.rotation.z, in.rotation.w));
+
+    double roll, pitch, yaw;
+    tf2::Matrix3x3(mSensor2BaseTransf.getRotation()).getRPY(roll, pitch, yaw);
+
+    RCLCPP_INFO(mNode->get_logger(), "Static transform Sensor to Base [%s -> %s]", mDepthFrameId.c_str(),
+                mBaseFrameId.c_str());
+    RCLCPP_INFO(mNode->get_logger(), " * Translation: {%.3f,%.3f,%.3f}", mSensor2BaseTransf.getOrigin().x(),
+                mSensor2BaseTransf.getOrigin().y(), mSensor2BaseTransf.getOrigin().z());
+    RCLCPP_INFO(mNode->get_logger(), " * Rotation: {%.3f,%.3f,%.3f}", roll * RAD2DEG, pitch * RAD2DEG, yaw * RAD2DEG);
+  }
+  catch (tf2::TransformException& ex)
+  {
+    if (!first_error)
+    {
+      rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+      RCLCPP_DEBUG_THROTTLE(mNode->get_logger(), steady_clock, 1.0, "Transform error: %s", ex.what());
+      RCLCPP_WARN_THROTTLE(mNode->get_logger(), steady_clock, 1.0, "The tf from '%s' to '%s' is not available.",
+                           mDepthFrameId.c_str(), mBaseFrameId.c_str());
+      RCLCPP_WARN_THROTTLE(mNode->get_logger(), steady_clock, 1.0,
+                           "Note: one of the possible cause of the problem is the absense of an instance "
+                           "of the `robot_state_publisher` node publishing the correct static TF transformations "
+                           "or a modified URDF not correctly reproducing the ZED "
+                           "TF chain '%s' -> '%s' -> '%s'",
+                           mBaseFrameId.c_str(), mCameraFrameId.c_str(), mDepthFrameId.c_str());
+      first_error = false;
+    }
+
+    mSensor2BaseTransf.setIdentity();
+    return false;
+  }
+
+  // <---- Static transforms
+
+  mSensor2BaseTransfValid = true;
+  return true;
+}
+
+
+void ZedOdom::processOdometry()
 {
   //adapted from https://github.com/stereolabs/zed-ros2-wrapper/blob/de1dfc4cde9ada3173074a05e14631d4d56e442c/zed_components/src/zed_camera/src/zed_camera_component.cpp
   
@@ -334,7 +524,7 @@ void ZedCamera::processOdometry()
     sl::Orientation quat = deltaOdom.getOrientation();
 
 #if 0
-        RCLCPP_DEBUG(get_logger(), "delta ODOM [%s] - %.2f,%.2f,%.2f %.2f,%.2f,%.2f,%.2f",
+        RCLCPP_DEBUG(mNode->get_logger(), "delta ODOM [%s] - %.2f,%.2f,%.2f %.2f,%.2f,%.2f,%.2f",
                      sl::toString(mPosTrackingStatus).c_str(),
                      translation(0), translation(1), translation(2),
                      quat(0), quat(1), quat(2), quat(3));
@@ -375,7 +565,7 @@ void ZedCamera::processOdometry()
             double roll, pitch, yaw;
             tf2::Matrix3x3(mOdom2BaseTransf.getRotation()).getRPY(roll, pitch, yaw);
 
-            RCLCPP_DEBUG(get_logger(), "+++ Odometry [%s -> %s] - {%.3f,%.3f,%.3f} {%.3f,%.3f,%.3f}",
+            RCLCPP_DEBUG(mNode->get_logger(), "+++ Odometry [%s -> %s] - {%.3f,%.3f,%.3f} {%.3f,%.3f,%.3f}",
                          mOdomFrameId.c_str(), mBaseFrameId.c_str(),
                          mOdom2BaseTransf.getOrigin().x(),
                          mOdom2BaseTransf.getOrigin().y(),
@@ -384,19 +574,20 @@ void ZedCamera::processOdometry()
 #endif
 
       // Publish odometry message
+      auto mFrameTimestamp = sl_tools::slTime2Ros(mZed.getTimestamp(sl::TIME_REFERENCE::CURRENT));
       publishOdom(mOdom2BaseTransf, deltaOdom, mFrameTimestamp);
       mPosTrackingReady = true;
     }
   }
   else if (mFloorAlignment)
   {
-    RCLCPP_DEBUG_THROTTLE(get_logger(), steady_clock, 5.0,
+    RCLCPP_DEBUG_THROTTLE(mNode->get_logger(), steady_clock, 5.0,
                           "Odometry will be published as soon as the floor as been detected for the first time");
   }
 }
 
 
-void ZedCamera::publishOdom(tf2::Transform& odom2baseTransf, sl::Pose& slPose, rclcpp::Time t)
+void ZedOdom::publishOdom(tf2::Transform& odom2baseTransf, sl::Pose& slPose, rclcpp::Time t)
 {
   //adapted from https://github.com/stereolabs/zed-ros2-wrapper/blob/de1dfc4cde9ada3173074a05e14631d4d56e442c/zed_components/src/zed_camera/src/zed_camera_component.cpp
   

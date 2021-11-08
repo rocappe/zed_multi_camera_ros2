@@ -43,10 +43,14 @@ class ZedPublisher : public rclcpp::Node
     std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Odometry>> odom_publisher_;
     std::shared_ptr<ZedOdom> zed_odom_;
     bool track_odometry_;
+    std::string camera_name_l_;
+    std::string camera_name_r_;
+    std::mutex zed_mutex_;
 };
 
 
-ZedPublisher::ZedPublisher() : Node{"zed_rgbd_publisher"}, run_{true}, nb_detected_zed_{0}, track_odometry_{true}
+ZedPublisher::ZedPublisher() : Node{"zed_rgbd_publisher"}, run_{true}, nb_detected_zed_{0}, track_odometry_{true}, camera_name_l_{"zed2_l"}
+, camera_name_r_{"zed2_r"}, odom_publisher_{}
 {
   rclcpp::QoS qos_profile(10);
 
@@ -56,20 +60,23 @@ ZedPublisher::ZedPublisher() : Node{"zed_rgbd_publisher"}, run_{true}, nb_detect
   res_h_ = this->declare_parameter<int>("height", 720);
   downsampling_ = this->declare_parameter<float>("downsampling", 1.0);
   fps_ = this->declare_parameter<int>("fps", 15);
+  camera_name_l_ = this->declare_parameter<std::string>("general.camera_name_l", "");
+  camera_name_r_ = this->declare_parameter<std::string>("general.camera_name_r", "");
 
-  auto rgb_publisher_l_info_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("zed2_l/rgb/info", qos_profile);
-  auto rgb_publisher_r_info_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("zed2_r/rgb/info", qos_profile);
-  auto rgb_publisher_l_ = this->create_publisher<sensor_msgs::msg::Image>("zed2_l/rgb", qos_profile);
-  auto rgb_publisher_r_ = this->create_publisher<sensor_msgs::msg::Image>("zed2_r/rgb", qos_profile);
-  auto depth_publisher_l_ = this->create_publisher<sensor_msgs::msg::Image>("zed2_l/depth", qos_profile);
-  auto depth_publisher_r_ = this->create_publisher<sensor_msgs::msg::Image>("zed2_r/depth", qos_profile);
+  auto rgb_publisher_l_info_ = this->create_publisher<sensor_msgs::msg::CameraInfo>(camera_name_l_ + "/rgb/info", qos_profile);
+  auto rgb_publisher_r_info_ = this->create_publisher<sensor_msgs::msg::CameraInfo>(camera_name_r_ + "/rgb/info", qos_profile);
+  auto rgb_publisher_l_ = this->create_publisher<sensor_msgs::msg::Image>(camera_name_l_ + "/rgb", qos_profile);
+  auto rgb_publisher_r_ = this->create_publisher<sensor_msgs::msg::Image>(camera_name_r_ + "/rgb", qos_profile);
+  auto depth_publisher_l_ = this->create_publisher<sensor_msgs::msg::Image>(camera_name_l_ + "/depth", qos_profile);
+  auto depth_publisher_r_ = this->create_publisher<sensor_msgs::msg::Image>(camera_name_r_ + "/depth", qos_profile);
   if (track_odometry_){
-    auto odom_publisher_ = this->create_publisher<nav_msgs::msg::Odometry>("zed2_l/odom", qos_profile);
+    odom_publisher_ = this->create_publisher<nav_msgs::msg::Odometry>(camera_name_l_ + "/odom", qos_profile);
   }
 
   image_publishers_ = {{sn_l_, {rgb_publisher_l_, depth_publisher_l_}}, {sn_r_, {rgb_publisher_r_, depth_publisher_r_}}};
   info_publishers_ = {{sn_l_, rgb_publisher_l_info_}, {sn_r_, rgb_publisher_r_info_}};
-  camera_frames_ = {{sn_l_, "zed2_l_left_camera_optical_frame"},  {sn_r_, "zed2_r_left_camera_optical_frame"}};
+
+  camera_frames_ = {{sn_l_, camera_name_l_ + "_left_camera_frame"},  {sn_r_, camera_name_r_ + "_left_camera_frame"}};
 
   main_loop();
 };
@@ -133,7 +140,7 @@ int ZedPublisher::main_loop() {
         std::cout << "Camera thread " << z+1 << " spawned" << std::endl;
         thread_pool_.emplace_back(&ZedPublisher::get_and_publish, this, std::ref(*zeds_.at(z)), std::ref(run_));
         if (track_odometry_ && zeds_.at(z)->getCameraInformation().serial_number == sn_l_){
-          zed_odom_ = std::make_shared<ZedOdom>(dynamic_cast<rclcpp::Node *>(this), zeds_.at(z));
+          zed_odom_ = std::make_shared<ZedOdom>(dynamic_cast<rclcpp::Node *>(this), zeds_.at(z), &zed_mutex_);
           thread_pool_.emplace_back(&ZedOdom::getOdom, std::ref(*zed_odom_), std::ref(odom_publisher_), std::ref(run_));
         }
       }
@@ -151,6 +158,7 @@ void ZedPublisher::get_and_publish(sl::Camera& zed, bool& run) {
   fillCamInfo(zed, res, left_cam_info_msg, right_cam_info_msg, camera_frames_.at(sn), std::string{"no_right_frame_id"});
   while (run) {
     // grab current images and compute depth
+    zed_mutex_.lock();
     if (zed.grab() == sl::ERROR_CODE::SUCCESS) {
       zed.retrieveImage(mat_image, sl::VIEW::LEFT, sl::MEM::CPU, res);
       zed.retrieveMeasure(mat_depth, sl::MEASURE::DEPTH, sl::MEM::CPU, res);
@@ -162,6 +170,7 @@ void ZedPublisher::get_and_publish(sl::Camera& zed, bool& run) {
       image_publishers_.at(sn).at(1)->publish(*depth_img);
       info_publishers_.at(sn)->publish(*left_cam_info_msg);
     }
+    zed_mutex_.unlock();
     sl::sleep_ms(2);
   }
   zed.close();

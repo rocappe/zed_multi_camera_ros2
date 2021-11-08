@@ -22,7 +22,7 @@
 class ZedOdom
 {
   public:
-    ZedOdom(rclcpp::Node* node, std::shared_ptr<sl::Camera> zed);
+    ZedOdom(rclcpp::Node* node, std::shared_ptr<sl::Camera> zed, std::mutex * zed_mutex);
     ~ZedOdom(){};
     void getOdom(std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Odometry>> odomPublisher, bool& run);
 
@@ -70,15 +70,17 @@ class ZedOdom
     tf2::Transform mCamera2BaseTransf;      // Coordinates of the base frame in camera frame
     // <---- TF Transforms
 
-    std::string mCameraFrameId;
-    std::string mBaseFrameId;
-    std::string mMapFrameId;
-    std::string mOdomFrameId;
-    std::string mDepthFrameId;
-    std::string mAreaMemoryDbPath;
+    std::string mCameraName = "zed2_l";
+    std::string mCameraFrameId = "zed2_l_camera_center";
+    std::string mBaseFrameId = "zed2_l_base_link";
+    std::string mMapFrameId = "map";
+    std::string mOdomFrameId = "odom";
+    std::string mDepthFrameId = "zed2_l_left_camera_frame";
+    std::string mAreaMemoryDbPath = "";
 
     rclcpp::Node * mNode;
-    std::shared_ptr<sl::Camera>  mZed;
+    std::shared_ptr<sl::Camera> mZed;
+    std::mutex * zed_mutex_;
 
     std::vector<double> mInitialBasePose;
     sl::Transform mInitialPoseSl;
@@ -91,22 +93,33 @@ class ZedOdom
     sl::POSITIONAL_TRACKING_STATE mPosTrackingStatus;
 };
 
-ZedOdom::ZedOdom(rclcpp::Node * node, std::shared_ptr<sl::Camera> zed) : mNode{node}, mZed{zed}, mPoseQos(1)
+ZedOdom::ZedOdom(rclcpp::Node * node, std::shared_ptr<sl::Camera> zed, std::mutex * zed_mutex) : mNode{node}, mZed{zed}, mPoseQos(1), zed_mutex_{zed_mutex}
 {
   mTfBuffer = std::make_unique<tf2_ros::Buffer>(mNode->get_clock());
   mTfListener = std::make_shared<tf2_ros::TransformListener>(*mTfBuffer);
   // Initialize tracking parameters
   mInitialBasePose = std::vector<double>(6, 0.0);
-  getPosTrackingParams();
+  zed_mutex_->lock();
+  //getPosTrackingParams();
+  zed_mutex_->unlock();
+  std::cout << "Camera frame " << mCameraFrameId << std::endl;
+  std::cout << "Base frame " << mBaseFrameId << std::endl;
+  std::cout << "Map frame " << mMapFrameId << std::endl;
+  std::cout << "Odom frame " << mOdomFrameId << std::endl;
+  std::cout << "Depth frame " << mDepthFrameId << std::endl;
 }
 
 void ZedOdom::getOdom(std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Odometry>> odomPublisher, bool& run)
 {
   while(run && mZed->isOpened()){
       if (!mPosTrackingStarted){
+        zed_mutex_->lock();
         startPosTracking();
+        zed_mutex_->unlock();
       }
+      zed_mutex_->lock();
       processOdometry(odomPublisher);
+      zed_mutex_->unlock();
       sl::sleep_ms(1);
   }
 }
@@ -134,6 +147,7 @@ void ZedOdom::getPosTrackingParams()
 {
   rclcpp::Parameter paramVal;
   std::string paramName;
+  std::string baseLink;
 
   rmw_qos_history_policy_t qos_hist = RMW_QOS_POLICY_HISTORY_KEEP_LAST;
   int qos_depth = 1;
@@ -145,7 +159,18 @@ void ZedOdom::getPosTrackingParams()
   getParam("pos_tracking.pos_tracking_enabled", mPosTrackingEnabled, mPosTrackingEnabled);
   RCLCPP_INFO_STREAM(mNode->get_logger(), " * Positional tracking enabled: " << (mPosTrackingEnabled ? "TRUE" : "FALSE"));
 
-  getParam("pos_tracking.base_frame", mBaseFrameId, mBaseFrameId, " * Base frame id: ");
+  if (mNode->get_parameter("general.camera_name_l", paramVal))
+  {
+    mCameraName = paramVal.as_string();
+  }
+  else
+  {
+    RCLCPP_WARN(mNode->get_logger(), "The parameter '%s' is not available, using the default value", "general.camera_name_l");
+  }
+
+  getParam("pos_tracking.base_frame", baseLink, baseLink, " * Base frame id: ");
+  mBaseFrameId = mCameraName + std::string("_") + baseLink;
+
   getParam("pos_tracking.map_frame", mMapFrameId, mMapFrameId, " * Map frame id: ");
   getParam("pos_tracking.odometry_frame", mOdomFrameId, mOdomFrameId, " * Odometry frame id: ");
 
@@ -270,6 +295,8 @@ void ZedOdom::getPosTrackingParams()
   }
 
   RCLCPP_INFO(mNode->get_logger(), " * Pose/Odometry QoS Durability: %s", sl_tools::qos2str(qos_durability).c_str());
+  mCameraFrameId = mCameraName + "_camera_center";
+  mDepthFrameId = mCameraName + "_left_camera_frame";
 }
 
 void ZedOdom::initTransforms()
@@ -634,36 +661,37 @@ void ZedOdom::processOdometry(std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::O
                      quat(0), quat(1), quat(2), quat(3));
 #endif
 
-    if (mPosTrackingStatus == sl::POSITIONAL_TRACKING_STATE::OK ||
-        mPosTrackingStatus == sl::POSITIONAL_TRACKING_STATE::SEARCHING ||
-        mPosTrackingStatus == sl::POSITIONAL_TRACKING_STATE::FPS_TOO_LOW)
+
+  if (mPosTrackingStatus == sl::POSITIONAL_TRACKING_STATE::OK ||
+      mPosTrackingStatus == sl::POSITIONAL_TRACKING_STATE::SEARCHING ||
+      mPosTrackingStatus == sl::POSITIONAL_TRACKING_STATE::FPS_TOO_LOW)
+  {
+    // Transform ZED delta odom pose in TF2 Transformation
+    tf2::Transform deltaOdomTf;
+    deltaOdomTf.setOrigin(tf2::Vector3(translation(0), translation(1), translation(2)));
+    // w at the end in the constructor
+    deltaOdomTf.setRotation(tf2::Quaternion(quat(0), quat(1), quat(2), quat(3)));
+
+    // delta odom from sensor to base frame
+    tf2::Transform deltaOdomTf_base = mSensor2BaseTransf.inverse() * deltaOdomTf * mSensor2BaseTransf;
+
+    // Propagate Odom transform in time
+    mOdom2BaseTransf = mOdom2BaseTransf * deltaOdomTf_base;
+
+    if (mTwoDMode)
     {
-      // Transform ZED delta odom pose in TF2 Transformation
-      tf2::Transform deltaOdomTf;
-      deltaOdomTf.setOrigin(tf2::Vector3(translation(0), translation(1), translation(2)));
-      // w at the end in the constructor
-      deltaOdomTf.setRotation(tf2::Quaternion(quat(0), quat(1), quat(2), quat(3)));
+      tf2::Vector3 tr_2d = mOdom2BaseTransf.getOrigin();
+      tr_2d.setZ(mFixedZValue);
+      mOdom2BaseTransf.setOrigin(tr_2d);
 
-      // delta odom from sensor to base frame
-      tf2::Transform deltaOdomTf_base = mSensor2BaseTransf.inverse() * deltaOdomTf * mSensor2BaseTransf;
+      double roll, pitch, yaw;
+      tf2::Matrix3x3(mOdom2BaseTransf.getRotation()).getRPY(roll, pitch, yaw);
 
-      // Propagate Odom transform in time
-      mOdom2BaseTransf = mOdom2BaseTransf * deltaOdomTf_base;
+      tf2::Quaternion quat_2d;
+      quat_2d.setRPY(0.0, 0.0, yaw);
 
-      if (mTwoDMode)
-      {
-        tf2::Vector3 tr_2d = mOdom2BaseTransf.getOrigin();
-        tr_2d.setZ(mFixedZValue);
-        mOdom2BaseTransf.setOrigin(tr_2d);
-
-        double roll, pitch, yaw;
-        tf2::Matrix3x3(mOdom2BaseTransf.getRotation()).getRPY(roll, pitch, yaw);
-
-        tf2::Quaternion quat_2d;
-        quat_2d.setRPY(0.0, 0.0, yaw);
-
-        mOdom2BaseTransf.setRotation(quat_2d);
-      }
+      mOdom2BaseTransf.setRotation(quat_2d);
+    }
 
 #if 0
             double roll, pitch, yaw;
@@ -729,5 +757,5 @@ void ZedOdom::publishOdom(tf2::Transform& odom2baseTransf, sl::Pose& slPose, rcl
   }
 
   // Publish odometry message
-  odomPublisher->publish(std::move(odomMsg));
+  odomPublisher->publish(*odomMsg);
 }

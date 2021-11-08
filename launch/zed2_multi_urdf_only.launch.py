@@ -64,34 +64,10 @@ def generate_launch_description():
 		'config_camera_path',
 		description='Path to the `<camera_model>.yaml` file.', default_value=config_camera_path_defalut)
 
-	#"left_sn": 28846348,
-	#"right_sn": 21128703,
-	#"width": 1280,
-	#"height": 720,
-	#"downsampling": 1.0,
-	#"fps": 15
-
-	zed_multi_node = Node(
-					package='zed_multi_camera',
-					executable='zed_multi_camera',
-					namespace='zed_multi',
-					parameters=[
-						# YAML files
-						config_common_path,  # Common parameters
-						config_camera_path,  # Camera related parameters
-						# Overriding
-						{
-							'general.svo_file': "",
-							'general.camera_name_l': camera_name_l,
-							'general.camera_name_r': camera_name_r
-						}
-					],
-					output="screen",
-	)
 
 	tf_node = Node(
 				package="tf2_ros", executable="static_transform_publisher",
-				arguments=["0.0", "-0.20", "0.0", "0", "0", "0", camera_name_l + "_left_camera_frame", camera_name_r + "_left_camera_frame"],
+				arguments=["0.0", "0.-20", "0.0", "0", "0", "0", camera_name_l + "_left_camera_frame", camera_name_r + "_left_camera_frame"],
 				output="screen",
 	)
 
@@ -149,5 +125,4 @@ def generate_launch_description():
 		tf_node,
 		rsp_node_l,
 		rsp_node_r,
-		zed_multi_node
 	])

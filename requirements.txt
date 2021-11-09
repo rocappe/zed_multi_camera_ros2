@@ -1,1 +1,8 @@
-
+ZED sdk version 3
+OpenCV
+CUDA
+ROS2 foxy
+sensor_msgs
+nav_msgs
+tf2_ros
+zed-ros2-wrapper

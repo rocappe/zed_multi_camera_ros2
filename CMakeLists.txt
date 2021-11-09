@@ -57,7 +57,7 @@ TARGET_LINK_LIBRARIES(${PROJECT_NAME} ${ZED_LIBS} ${SPECIAL_OS_LIBS} ${OpenCV_LI
 install(TARGETS ${PROJECT_NAME} zed_odom
   DESTINATION lib/${PROJECT_NAME})
 
-install(DIRECTORY launch
+install(DIRECTORY launch config
 	DESTINATION share/${PROJECT_NAME})
 
 ament_package()

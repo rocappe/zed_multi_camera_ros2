@@ -74,7 +74,6 @@ def generate_launch_description():
 	zed_multi_node = Node(
 					package='zed_multi_camera',
 					executable='zed_multi_camera',
-					namespace='zed_multi',
 					parameters=[
 						# YAML files
 						config_common_path,  # Common parameters

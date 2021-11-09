@@ -43,13 +43,15 @@ class ZedPublisher : public rclcpp::Node
     std::shared_ptr<rclcpp::Publisher<nav_msgs::msg::Odometry>> odom_publisher_;
     std::shared_ptr<ZedOdom> zed_odom_;
     bool track_odometry_;
+    bool left_found_;
+    size_t left_camera_index_;
     std::string camera_name_l_;
     std::string camera_name_r_;
     std::mutex zed_mutex_;
 };
 
 
-ZedPublisher::ZedPublisher() : Node{"zed_rgbd_publisher"}, run_{true}, nb_detected_zed_{0}, track_odometry_{true}, camera_name_l_{"zed2_l"}
+ZedPublisher::ZedPublisher() : Node{"zed_rgbd_publisher"}, run_{true}, nb_detected_zed_{0}, track_odometry_{true}, left_found_{false}, camera_name_l_{"zed2_l"}
 , camera_name_r_{"zed2_r"}, odom_publisher_{}
 {
   rclcpp::QoS qos_profile(10);
@@ -87,12 +89,12 @@ ZedPublisher::~ZedPublisher(){
   run_ = false;
 
   // Wait for every thread to be stopped
-  if (track_odometry_){
-    nb_detected_zed_++;
+  //for (size_t z = 0; z < nb_detected_zed_; z++)
+  //  if (zeds_.at(z)->isOpened())
+  //      thread_pool_[z].join();
+  for (size_t z = 0; z < thread_pool_.size(); z++){
+    thread_pool_[z].join();
   }
-  for (size_t z = 0; z < nb_detected_zed_; z++)
-        if (zeds_.at(z)->isOpened())
-            thread_pool_[z].join();
 };
 
 int ZedPublisher::main_loop() {
@@ -106,16 +108,17 @@ int ZedPublisher::main_loop() {
   init_parameters.coordinate_system = sl::COORDINATE_SYSTEM::RIGHT_HANDED_Z_UP_X_FWD;
     
   std::vector< sl::DeviceProperties> devList = sl::Camera::getDeviceList();
-    nb_detected_zed_ = devList.size();
 
+  while(devList.size() == 0){
+     std::cout << "No ZED camera detected" << std::endl;
+     sl::sleep_ms(1000);
+     devList = sl::Camera::getDeviceList();
+  }
+
+  nb_detected_zed_ = devList.size();
   for (size_t z = 0; z < nb_detected_zed_; z++) {
     zeds_.emplace_back(std::make_shared<sl::Camera>());
     std::cout << "ID : " << devList[z].id << " ,model : " << devList[z].camera_model << " , S/N : " << devList[z].serial_number << " , state : "<<devList[z].camera_state<<std::endl;
-  }
-
-  if (nb_detected_zed_ == 0) {
-    std::cout << "Did not detect ZED cameras, exit program" << std::endl;
-      return EXIT_FAILURE;
   }
     
   std::cout << nb_detected_zed_ << " ZED Detected" << std::endl;
@@ -135,16 +138,20 @@ int ZedPublisher::main_loop() {
   // Create a grab thread for each opened camera
 
   for (size_t z = 0; z < nb_detected_zed_; z++){
-      if (zeds_.at(z)->isOpened()) {
-          // camera acquisition thread
-        std::cout << "Camera thread " << z+1 << " spawned" << std::endl;
-        thread_pool_.emplace_back(&ZedPublisher::get_and_publish, this, std::ref(*zeds_.at(z)), std::ref(run_));
-        if (track_odometry_ && zeds_.at(z)->getCameraInformation().serial_number == sn_l_){
-          zed_odom_ = std::make_shared<ZedOdom>(dynamic_cast<rclcpp::Node *>(this), zeds_.at(z), &zed_mutex_);
-          thread_pool_.emplace_back(&ZedOdom::getOdom, std::ref(*zed_odom_), std::ref(odom_publisher_), std::ref(run_));
-        }
+    if (zeds_.at(z)->isOpened()) {
+        // camera acquisition thread
+      std::cout << "Camera thread " << z+1 << " spawned" << std::endl;
+      thread_pool_.emplace_back(&ZedPublisher::get_and_publish, this, std::ref(*zeds_.at(z)), std::ref(run_));
+      if (zeds_.at(z)->getCameraInformation().serial_number == sn_l_){
+        left_found_ = true;
+        left_camera_index_ = z;
       }
+    }
 	}
+  if (track_odometry_ && left_found_){
+    zed_odom_ = std::make_shared<ZedOdom>(dynamic_cast<rclcpp::Node *>(this), zeds_.at(left_camera_index_), &zed_mutex_);
+    thread_pool_.emplace_back(&ZedOdom::getOdom, std::ref(*zed_odom_), std::ref(odom_publisher_), std::ref(run_));
+  }
 };
 
 

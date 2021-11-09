@@ -1,16 +1,23 @@
 cmake_minimum_required(VERSION 3.5)
 project(zed_multi_camera)
 
+set(default_build_type "Release")
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  message(STATUS "Setting build type to '${default_build_type}' as none was specified.")
+  set(CMAKE_BUILD_TYPE "${default_build_type}" CACHE)
+endif()
+
 option(LINK_SHARED_ZED "Link with the ZED SDK shared executable" ON)
 
 if (NOT LINK_SHARED_ZED AND MSVC)
     message(FATAL_ERROR "LINK_SHARED_ZED OFF : ZED SDK static libraries not available on Windows")
 endif()
 
-if(COMMAND cmake_policy)
-	cmake_policy(SET CMP0003 OLD)
-	cmake_policy(SET CMP0015 OLD)
-endif(COMMAND cmake_policy)
+#if(COMMAND cmake_policy)
+#	cmake_policy(SET CMP0003 OLD)
+#	cmake_policy(SET CMP0015 OLD)
+#endif(COMMAND cmake_policy)
 
 # Default to C99
 if(NOT CMAKE_C_STANDARD)

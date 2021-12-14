@@ -10,7 +10,7 @@
 
 ## Description of the project
 It is a Ros2 foxy node based on https://github.com/stereolabs/zed-multi-camera and snippets of the zed ros2 wrapper https://github.com/stereolabs/zed-ros2-wrapper. It is written to be used with two ZED2 cameras and it uses the config files present in the zed ros2 wrapper.  
-There is also a ros2 launchfile *zed2_multi.launch.py* to launch two cameras using the zed ros2 node made by the manufacturer. The configuration parameters are in zed_l.launch.py and zed_r.launch.py.
+There is also a ros2 launchfile *zed2_multi.launch.py* to launch two cameras using the zed ros2 node made by the manufacturer. The configuration parameters are in zed_l.yaml and zed_r.yaml.
 
 ## Installation procedure
 Clone it in the colcon workspace and build it. 
